@@ -1,18 +1,18 @@
 /**
  * MIT License
- *
+ * <p>
  * Copyright (c) 2020 ZOLOZ-PTE-LTD
- *
+ * <p>
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- *
+ * <p>
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- *
+ * <p>
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -28,30 +28,28 @@ import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.DialogInterface;
+import android.content.Intent;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
-
-import androidx.appcompat.app.AppCompatActivity;
-import android.text.TextUtils;
 import android.util.Log;
-import android.view.View;
 import android.widget.Toast;
 
+import androidx.appcompat.app.AppCompatActivity;
+
 import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.JSONObject;
 import com.ap.zoloz.hummer.api.IZLZCallback;
 import com.ap.zoloz.hummer.api.ZLZConstants;
 import com.ap.zoloz.hummer.api.ZLZFacade;
 import com.ap.zoloz.hummer.api.ZLZRequest;
 import com.ap.zoloz.hummer.api.ZLZResponse;
-import com.zoloz.builder.BuildConfig;
+
+import java.util.Base64;
 
 
 public class MainActivity extends AppCompatActivity {
     public static final String TAG = MainActivity.class.getSimpleName();
-
-
-    private static final int REQUEST_EXTERNAL_STORAGE = 1;
 
 
     private Handler mHandler;
@@ -61,10 +59,30 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         mHandler = new Handler();
-        EditTextUtils.setup(this, R.id.init_host);
-        EditTextUtils.setup(this, R.id.init_ref);
-        EditTextUtils.setup(this, R.id.init_doc_type);
-        EditTextUtils.setup(this, R.id.init_service_level);
+
+        // 獲取 Intent
+        Intent intent = getIntent();
+        Uri data = intent.getData();
+
+        if (data != null) {
+            // 提取 Scheme URL 的資訊
+            String scheme = data.getScheme(); // 例如 "myapp"
+            String host = data.getHost();     // 例如 "open"
+            String path = data.getPath();     // 例如 "/details"
+            String query = data.getQuery();   // 例如 "id=123"
+            Log.d(TAG, "收到 intent! Host: " + host + ", Path: " + path + ", Query: " + query);
+            // 根據資料執行相應操作
+
+            String decode = decodeBase64(query);
+
+
+            if (decode == null) {
+                Log.d(TAG, "Base64 解碼失敗");
+            } else {
+                Log.d(TAG, "解碼: " + decode);
+                startZoloz(decode);
+            }
+        }
     }
 
 
@@ -73,29 +91,32 @@ public class MainActivity extends AppCompatActivity {
         thread.start();
     }
 
+    public String decodeBase64(String encodedString) {
+        try {
+            byte[] decodedBytes = null;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                decodedBytes = Base64.getDecoder().decode(encodedString);
+            }
+            return new String(decodedBytes);
+        } catch (IllegalArgumentException e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
 
-    public void startZoloz(View view) {
+
+    public void startZoloz(String rawConfig) {
         runOnIoThread(new Runnable() {
             @Override
             public void run() {
-                String result = mockInitRequest();
-                if (TextUtils.isEmpty(result)) {
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            Toast.makeText(MainActivity.this, "network exception, please try again later.", Toast.LENGTH_SHORT).show();
-                        }
-                    });
-                    return;
-                }
-                final InitResponse initResponse = JSON.parseObject(result, InitResponse.class);
+                final InitResponse initResponse = JSON.parseObject(rawConfig, InitResponse.class);
                 final ZLZFacade zlzFacade = ZLZFacade.getInstance();
                 final ZLZRequest request = new ZLZRequest();
                 request.zlzConfig = initResponse.clientCfg;
                 request.bizConfig.put(ZLZConstants.CONTEXT, MainActivity.this);
                 request.bizConfig.put(ZLZConstants.PUBLIC_KEY, initResponse.rsaPubKey);
                 request.bizConfig.put(ZLZConstants.CHAMELEON_CONFIG_PATH, "config_realId.zip");
-                request.bizConfig.put(ZLZConstants.LOCALE, "en");
+                request.bizConfig.put(ZLZConstants.LOCALE, "zh_tw_#hant");
                 Log.d(TAG, "request success:");
                 mHandler.postAtFrontOfQueue(new Runnable() {
                     @Override
@@ -104,12 +125,13 @@ public class MainActivity extends AppCompatActivity {
                         zlzFacade.start(request, new IZLZCallback() {
                             @Override
                             public void onCompleted(ZLZResponse response) {
-                                checkResult(initResponse.transactionId);
+                                Log.d(TAG, "ZOLOZ Face on completed. " + JSON.toJSONString(response));
                             }
 
                             @Override
                             public void onInterrupted(ZLZResponse response) {
                                 showResponse(initResponse.transactionId, JSON.toJSONString(response));
+                                Log.d(TAG, "ZOLOZ Face on interrupted. " + JSON.toJSONString(response));
                                 Toast.makeText(MainActivity.this, "interrupted", Toast.LENGTH_SHORT).show();
                             }
                         });
@@ -119,26 +141,6 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void checkResult(final String transactionId) {
-        runOnIoThread(new Runnable() {
-            @Override
-            public void run() {
-                IRequest request = new LocalRequest();
-                String requestUrl = EditTextUtils.getAndSave(MainActivity.this, R.id.init_host) + EditTextUtils.getAndSave(MainActivity.this, R.id.init_ref);
-                requestUrl = requestUrl.replaceAll("initialize", "checkresult");
-                JSONObject jsonObject = new JSONObject();
-                jsonObject.put("transactionId", transactionId);
-                String requestData = jsonObject.toString();
-                final String result = request.request(requestUrl, requestData);
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        showResponse(transactionId, result);
-                    }
-                });
-            }
-        });
-    }
 
     private void showResponse(final String flowId, String response) {
         AlertDialog alertDialog = new AlertDialog.Builder(this)
@@ -159,18 +161,5 @@ public class MainActivity extends AppCompatActivity {
         alertDialog.setCancelable(false);
         alertDialog.setCanceledOnTouchOutside(false);
         alertDialog.show();
-    }
-
-    protected String mockInitRequest() {
-        IRequest request = new LocalRequest();
-        String requestUrl = EditTextUtils.getAndSave(this, R.id.init_host) + EditTextUtils.getAndSave(this, R.id.init_ref);
-        JSONObject jsonObject = new JSONObject();
-        jsonObject.put("metaInfo", ZLZFacade.getMetaInfo(this));
-        jsonObject.put("serviceLevel", EditTextUtils.getAndSave(this, R.id.init_service_level));
-        jsonObject.put("docType", EditTextUtils.getAndSave(this, R.id.init_doc_type));
-        jsonObject.put("v", BuildConfig.VERSION_NAME);
-        String requestData = jsonObject.toString();
-        String result = request.request(requestUrl, requestData);
-        return result;
     }
 }
